@@ -463,7 +463,7 @@ export const SitesTable = memo(function SitesTable({
                 : "Mostrar tempo indisponível em destaque em todas as linhas"
             }
             onClick={toggleToolbarPrimary}
-            className="h-9 shrink-0 gap-1.5 border-border px-2.5 text-xs text-card-foreground"
+            className="h-9 shrink-0 gap-1.5 border-border px-2.5 text-xs text-card-foreground cursor-pointer hover:bg-muted/50 hover:text-foreground"
           >
             <ArrowLeftRight className="h-3.5 w-3.5" />
             {availabilityPrimary.global ? "Disponível (todas)" : "Indisponível (todas)"}

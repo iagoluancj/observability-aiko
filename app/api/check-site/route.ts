@@ -5,11 +5,20 @@ import { deriveSiteCheckFromUrlResult } from "@/lib/derive-site-check"
 
 const log = createLogger("api:check-site")
 
+// Contador global de requisições (reinicia por processo/servidor)
+let requestCount = 0
+let lastRequestTime = 0
+
 export async function POST(request: NextRequest) {
+  const now = Date.now()
+  const timeSinceLast = lastRequestTime > 0 ? now - lastRequestTime : 0
+  requestCount++
+  lastRequestTime = now
+
   const { url } = await request.json()
 
   const requestId = `${Date.now()}-${Math.random().toString(16).slice(2)}`
-  log.info("Requisição recebida", { requestId, url })
+  log.info("Requisição recebida", { requestId, url, totalRequests: requestCount, timeSinceLastMs: timeSinceLast })
 
   if (!url || typeof url !== "string") {
     log.warn("URL inválida recebida", { requestId, url })
