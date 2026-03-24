@@ -11,15 +11,66 @@ import { getSupabaseAdmin } from "@/lib/supabase/admin"
 import { clampAvailabilityHours } from "@/lib/availability-window-presets"
 import type { PersistedStatus } from "@/lib/availability-log-policy"
 import {
-  integrateAvailabilityWindow,
   uptimePctFromMs,
 } from "@/lib/availability-time-weighted"
+import {
+  buildCoverageFromCollectionRuns,
+  computeFreshness,
+  integrateAvailabilityWithGapGuard,
+  readExpectedCollectionIntervalMsFromEnv,
+  readMaxCarryForwardMsFromEnv,
+  readStaleAfterMsFromEnv,
+} from "@/lib/availability-data-quality"
 
 const RECENT_SAMPLES_PER_SITE = 12
 const MAX_CHECKS_FETCH = 80000
 const log = createLogger("api:availability-summary")
 
 export const dynamic = "force-dynamic"
+
+async function fetchCollectionRunsInWindow(
+  sinceIso: string,
+): Promise<string[]> {
+  const supabase = getSupabaseAdmin()
+  if (!supabase) return []
+
+  const { data, error } = await supabase
+    .from("availability_collection_runs")
+    .select("run_at")
+    .eq("status", "ok")
+    .gte("run_at", sinceIso)
+    .order("run_at", { ascending: true })
+    .limit(MAX_CHECKS_FETCH)
+
+  if (error) {
+    log.warn("Erro ao listar availability_collection_runs na janela", { message: error.message })
+    return []
+  }
+
+  return (data ?? [])
+    .map((r) => (typeof r.run_at === "string" ? r.run_at : null))
+    .filter((v): v is string => v != null)
+}
+
+async function fetchLastCollectionRunAt(): Promise<string | null> {
+  const supabase = getSupabaseAdmin()
+  if (!supabase) return null
+
+  const { data, error } = await supabase
+    .from("availability_collection_runs")
+    .select("run_at")
+    .eq("status", "ok")
+    .order("run_at", { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) {
+    log.warn("Erro ao buscar último run de coleta", { message: error.message })
+    return null
+  }
+
+  return data?.run_at ?? null
+}
 
 async function fetchSeedStatusBefore(
   siteIds: string[],
@@ -93,6 +144,7 @@ function buildSummary(
 ): Extract<AvailabilitySummaryResponse, { configured: true }> {
   const metaBySiteId = new Map(siteRows.map(s => [s.id, s]))
   const windowMs = windowEndMs - windowStartMs
+  const maxCarryForwardMs = readMaxCarryForwardMsFromEnv()
 
   const checksBySiteId = new Map<string, typeof checks>()
   for (const r of checks) {
@@ -147,6 +199,9 @@ function buildSummary(
   let totOnlineRows = 0
   let totUnstableRows = 0
   let totOfflineRows = 0
+  let sumConfidencePct = 0
+  let sitesWithConfidence = 0
+  let unknownMsTotal = 0
 
   const perSite: AvailabilitySummaryPerSite[] = externalIdOrder.map(ext => {
     const site = siteRows.find(s => s.external_id === ext)
@@ -162,6 +217,12 @@ function buildSummary(
         availableMinutesApprox: null,
         avgResponseMs: null,
         recentSamples: [],
+        quality: {
+          maxCarryForwardMs,
+          unknownMs: windowMs,
+          confidencePct: 0,
+          largestGapMs: windowMs,
+        },
       }
     }
 
@@ -172,6 +233,19 @@ function buildSummary(
 
     const seed = seedBySiteId.get(site.id) ?? null
     const hasAnySignal = siteChecks.length > 0 || seed != null
+    const integrated = integrateAvailabilityWithGapGuard({
+      windowStartMs,
+      windowEndMs,
+      maxCarryForwardMs,
+      seed,
+      eventsInWindow: siteChecks,
+    })
+    const quality = {
+      maxCarryForwardMs: integrated.maxCarryForwardMs,
+      unknownMs: integrated.unknownMs,
+      confidencePct: integrated.confidencePct,
+      largestGapMs: integrated.largestGapMs,
+    }
 
     if (!hasAnySignal) {
       return {
@@ -185,19 +259,15 @@ function buildSummary(
         availableMinutesApprox: null,
         avgResponseMs: null,
         recentSamples: [],
+        quality,
       }
     }
 
-    const { onlineMs } = integrateAvailabilityWindow(
-      windowStartMs,
-      windowEndMs,
-      seed,
-      siteChecks,
-    )
+    const { onlineMs, knownMs } = integrated
 
-    const uptimePct = uptimePctFromMs(onlineMs, windowMs)
+    const uptimePct = uptimePctFromMs(onlineMs, knownMs)
     const availableMinutesApprox =
-      uptimePct != null ? Math.round(onlineMs / 60000) : null
+      knownMs > 0 ? Math.round(onlineMs / 60000) : null
 
     let onC = 0
     let unC = 0
@@ -226,6 +296,9 @@ function buildSummary(
       sumUptimePct += uptimePct
       sitesWithUptime += 1
     }
+    sumConfidencePct += quality.confidencePct
+    sitesWithConfidence += 1
+    unknownMsTotal += quality.unknownMs
 
     return {
       externalId: ext,
@@ -238,6 +311,7 @@ function buildSummary(
       availableMinutesApprox,
       avgResponseMs: rtN > 0 ? Math.round(sumRt / rtN) : null,
       recentSamples: recentBySiteId.get(site.id) ?? [],
+      quality,
     }
   })
 
@@ -253,9 +327,14 @@ function buildSummary(
         ? Math.round(((sumUptimePct / sitesWithUptime) / 100) * (windowMs / 60000))
         : null,
     avgResponseMs: rtNAll > 0 ? Math.round(sumRtAll / rtNAll) : null,
+    confidencePct:
+      sitesWithConfidence > 0
+        ? Math.round((sumConfidencePct / sitesWithConfidence) * 10) / 10
+        : null,
+    unknownMsTotal,
   }
 
-  return { configured: true, hours, perSite, timeline, totals }
+  return { configured: true, hours, perSite, timeline, totals, collection: null }
 }
 
 export async function GET(request: NextRequest) {
@@ -286,7 +365,10 @@ export async function GET(request: NextRequest) {
         uptimePct: null,
         availableMinutesApprox: null,
         avgResponseMs: null,
+        confidencePct: null,
+        unknownMsTotal: 0,
       },
+      collection: null,
     }
     return NextResponse.json(empty)
   }
@@ -352,5 +434,36 @@ export async function GET(request: NextRequest) {
     windowStartMs,
     windowEndMs,
   )
+  const expectedIntervalMs = readExpectedCollectionIntervalMsFromEnv()
+  const fallbackMaxCarryForwardMs = readMaxCarryForwardMsFromEnv()
+  const staleAfterMs = readStaleAfterMsFromEnv()
+  const runAts = await fetchCollectionRunsInWindow(since)
+  const coverage = buildCoverageFromCollectionRuns(
+    windowStartMs,
+    windowEndMs,
+    runAts,
+    summary.perSite[0]?.quality.maxCarryForwardMs ?? fallbackMaxCarryForwardMs,
+  )
+  const windowMs = Math.max(0, windowEndMs - windowStartMs)
+  const coveragePct =
+    windowMs > 0 ? Math.max(0, Math.min(100, Math.round(((windowMs - coverage.uncoveredMs) / windowMs) * 1000) / 10)) : 0
+  const lastRunAt = await fetchLastCollectionRunAt()
+  const freshness = computeFreshness(windowEndMs, lastRunAt, staleAfterMs)
+  const largestSiteGapMs = summary.perSite.reduce(
+    (max, site) => Math.max(max, site.quality.largestGapMs),
+    0,
+  )
+  summary.collection = {
+    expectedIntervalMs,
+    maxCarryForwardMs: summary.perSite[0]?.quality.maxCarryForwardMs ?? fallbackMaxCarryForwardMs,
+    staleAfterMs,
+    coverageWindowHours: hours,
+    coveragePct,
+    gapCount: coverage.gapCount,
+    largestGapMs: Math.max(coverage.largestGapMs, largestSiteGapMs),
+    lastRunAt,
+    staleNow: freshness.staleNow,
+    staleForMs: freshness.staleForMs,
+  }
   return NextResponse.json(summary)
 }

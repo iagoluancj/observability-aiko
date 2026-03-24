@@ -15,6 +15,7 @@ function serializeConfigured(
       availableMinutesApprox: p.availableMinutesApprox,
       avgResponseMs: p.avgResponseMs,
       recentSamples: p.recentSamples.map(s => [s.checkedAt, s.status, s.responseTimeMs]),
+      quality: p.quality,
     }))
   const tl = a.timeline.map(t => [t.bucket, t.avgMs, t.checks])
   return JSON.stringify({
@@ -22,6 +23,7 @@ function serializeConfigured(
     per,
     tl,
     totals: a.totals,
+    collection: a.collection,
   })
 }
 

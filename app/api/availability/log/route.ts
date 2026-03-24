@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { createLogger } from "@/lib/logger"
 import { isMonitorSyncAuthorized } from "@/lib/monitor-api-auth"
+import { recordAvailabilityCollectionRun } from "@/lib/availability-collection-run"
 import { getSupabaseAdmin } from "@/lib/supabase/admin"
 import { buildSiteIdentityKey } from "@/lib/site-identity"
 import {
@@ -365,6 +366,12 @@ export async function POST(request: NextRequest) {
 
   if (upsertError) {
     log.error("Erro ao upsert monitored_sites", { message: upsertError.message })
+    await recordAvailabilityCollectionRun({
+      source: "dashboard",
+      status: "error",
+      checkedCount: 0,
+      errorMessage: upsertError.message,
+    })
     return NextResponse.json({ error: upsertError.message }, { status: 500 })
   }
 
@@ -376,6 +383,12 @@ export async function POST(request: NextRequest) {
 
   if (selectError || !idRows?.length) {
     log.error("Erro ao resolver site_id", { message: selectError?.message })
+    await recordAvailabilityCollectionRun({
+      source: "dashboard",
+      status: "error",
+      checkedCount: 0,
+      errorMessage: selectError?.message ?? "Sites não encontrados após upsert",
+    })
     return NextResponse.json({ error: selectError?.message ?? "Sites não encontrados após upsert" }, { status: 500 })
   }
 
@@ -428,6 +441,11 @@ export async function POST(request: NextRequest) {
   }
 
   if (inserts.length === 0) {
+    await recordAvailabilityCollectionRun({
+      source: "dashboard",
+      status: "ok",
+      checkedCount: 0,
+    })
     return NextResponse.json({ ok: true, logged: 0, skipped })
   }
 
@@ -435,9 +453,20 @@ export async function POST(request: NextRequest) {
 
   if (insertError) {
     log.error("Erro ao inserir availability_checks", { message: insertError.message })
+    await recordAvailabilityCollectionRun({
+      source: "dashboard",
+      status: "error",
+      checkedCount: 0,
+      errorMessage: insertError.message,
+    })
     return NextResponse.json({ error: insertError.message }, { status: 500 })
   }
 
+  await recordAvailabilityCollectionRun({
+    source: "dashboard",
+    status: "ok",
+    checkedCount: inserts.length,
+  })
   log.debug("Disponibilidade (esparsa)", { logged: inserts.length, skipped })
   return NextResponse.json({ ok: true, logged: inserts.length, skipped })
 }
