@@ -41,6 +41,11 @@ interface ExistingSiteRow {
   updated_at: string
 }
 
+interface ReconciledSitesResult {
+  byExternalId: Map<string, ExistingSiteRow>
+  byIdentity: Map<string, ExistingSiteRow>
+}
+
 function statusForRow(
   s: z.infer<typeof bodySchema>["entries"][number]["check"]["status"],
 ): PersistedStatus {
@@ -153,20 +158,11 @@ async function fetchExistingSitesForEntries(
   return byId
 }
 
-async function reconcileLegacyExternalIds(
-  entries: AvailabilityLogEntry[],
-  nowIso: string,
-): Promise<void> {
-  const supabase = getSupabaseAdmin()
-  if (!supabase || entries.length === 0) return
-
-  const existing = await fetchExistingSitesForEntries(entries)
-  if (existing.size === 0) return
-
+function buildSiteIndexes(rows: Iterable<ExistingSiteRow>): ReconciledSitesResult {
   const byExternalId = new Map<string, ExistingSiteRow>()
   const byIdentity = new Map<string, ExistingSiteRow>()
 
-  for (const row of existing.values()) {
+  for (const row of rows) {
     byExternalId.set(row.external_id, row)
     const key = buildSiteIdentityKey({ name: row.name, url: row.url })
     const prev = byIdentity.get(key)
@@ -176,6 +172,81 @@ async function reconcileLegacyExternalIds(
     }
     byIdentity.set(key, pickPreferredExistingSite(prev, row))
   }
+
+  return { byExternalId, byIdentity }
+}
+
+function pickCanonicalSite(rows: ExistingSiteRow[]): ExistingSiteRow {
+  return rows.reduce((best, row) => pickPreferredExistingSite(best, row))
+}
+
+async function mergeDuplicateSiteRowsByIdentity(
+  rows: ExistingSiteRow[],
+): Promise<Map<string, ExistingSiteRow>> {
+  const supabase = getSupabaseAdmin()
+  const byId = new Map<string, ExistingSiteRow>(rows.map((r) => [r.id, r]))
+  if (!supabase || rows.length <= 1) return byId
+
+  const groups = new Map<string, ExistingSiteRow[]>()
+  for (const row of rows) {
+    const key = buildSiteIdentityKey({ name: row.name, url: row.url })
+    const arr = groups.get(key) ?? []
+    arr.push(row)
+    groups.set(key, arr)
+  }
+
+  for (const arr of groups.values()) {
+    if (arr.length <= 1) continue
+    const canonical = pickCanonicalSite(arr)
+
+    for (const row of arr) {
+      if (row.id === canonical.id) continue
+
+      const { error: moveChecksError } = await supabase
+        .from("availability_checks")
+        .update({ site_id: canonical.id })
+        .eq("site_id", row.id)
+
+      if (moveChecksError) {
+        log.warn("Falha ao mover checks para site canônico", {
+          fromSiteId: row.id,
+          toSiteId: canonical.id,
+          message: moveChecksError.message,
+        })
+        continue
+      }
+
+      const { error: deleteError } = await supabase
+        .from("monitored_sites")
+        .delete()
+        .eq("id", row.id)
+
+      if (deleteError) {
+        log.warn("Falha ao remover site duplicado", {
+          siteId: row.id,
+          message: deleteError.message,
+        })
+        continue
+      }
+
+      byId.delete(row.id)
+    }
+  }
+
+  return byId
+}
+
+async function reconcileLegacyExternalIds(
+  entries: AvailabilityLogEntry[],
+  nowIso: string,
+): Promise<ReconciledSitesResult> {
+  const supabase = getSupabaseAdmin()
+  if (!supabase || entries.length === 0) return { byExternalId: new Map(), byIdentity: new Map() }
+
+  const existing = await fetchExistingSitesForEntries(entries)
+  if (existing.size === 0) return { byExternalId: new Map(), byIdentity: new Map() }
+  const mergedById = await mergeDuplicateSiteRowsByIdentity([...existing.values()])
+  let { byExternalId, byIdentity } = buildSiteIndexes(mergedById.values())
 
   const updates: Array<{
     id: string
@@ -208,7 +279,7 @@ async function reconcileLegacyExternalIds(
     })
   }
 
-  if (updates.length === 0) return
+  if (updates.length === 0) return { byExternalId, byIdentity }
 
   await Promise.all(
     updates.map(async (u) => {
@@ -232,6 +303,19 @@ async function reconcileLegacyExternalIds(
       }
     }),
   )
+
+  ;({ byExternalId, byIdentity } = buildSiteIndexes([
+    ...mergedById.values(),
+    ...updates.map((u) => ({
+      id: u.id,
+      external_id: u.external_id,
+      name: u.name,
+      url: u.url,
+      updated_at: u.updated_at,
+    })),
+  ]))
+
+  return { byExternalId, byIdentity }
 }
 
 export async function POST(request: NextRequest) {
