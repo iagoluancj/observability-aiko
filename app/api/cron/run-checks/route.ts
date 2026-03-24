@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { checkUrl } from "@/lib/check-url"
 import { deriveSiteCheckFromUrlResult } from "@/lib/derive-site-check"
 import { createLogger } from "@/lib/logger"
+import { recordAvailabilityCollectionRun } from "@/lib/availability-collection-run"
 import { getSupabaseAdmin } from "@/lib/supabase/admin"
 
 const log = createLogger("api:cron-run-checks")
@@ -52,10 +53,21 @@ export async function GET(request: NextRequest) {
 
   if (listError) {
     log.error("Erro ao listar sites", { message: listError.message })
+    await recordAvailabilityCollectionRun({
+      source: "cron",
+      status: "error",
+      checkedCount: 0,
+      errorMessage: listError.message,
+    })
     return NextResponse.json({ error: listError.message }, { status: 500 })
   }
 
   if (!sites?.length) {
+    await recordAvailabilityCollectionRun({
+      source: "cron",
+      status: "ok",
+      checkedCount: 0,
+    })
     return NextResponse.json({ ok: true, checked: 0, message: "Nenhum site cadastrado" })
   }
 
@@ -84,9 +96,20 @@ export async function GET(request: NextRequest) {
 
   if (insertError) {
     log.error("Erro ao inserir availability_checks", { message: insertError.message })
+    await recordAvailabilityCollectionRun({
+      source: "cron",
+      status: "error",
+      checkedCount: 0,
+      errorMessage: insertError.message,
+    })
     return NextResponse.json({ error: insertError.message }, { status: 500 })
   }
 
+  await recordAvailabilityCollectionRun({
+    source: "cron",
+    status: "ok",
+    checkedCount: inserts.length,
+  })
   log.info("Cron concluído", { checked: inserts.length })
   return NextResponse.json({ ok: true, checked: inserts.length })
 }
