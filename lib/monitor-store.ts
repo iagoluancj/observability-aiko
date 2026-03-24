@@ -1,4 +1,5 @@
 import type { MonitoredSite, SiteCheck, SiteStatus, DashboardStats } from "./types"
+import { buildStableSiteExternalId } from "./site-identity"
 
 const STORAGE_KEY = "aiko-monitor-sites"
 
@@ -18,7 +19,15 @@ export function loadSites(): MonitoredSite[] {
   if (typeof window === "undefined") return []
   try {
     const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored) return JSON.parse(stored)
+    if (!stored) return []
+    const parsed = JSON.parse(stored) as MonitoredSite[]
+    if (!Array.isArray(parsed)) return []
+
+    const { sites: migrated, changed } = migrateSitesToStableIds(parsed)
+    if (changed) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(migrated))
+    }
+    return migrated
   } catch {}
   return []
 }
@@ -33,17 +42,28 @@ export function saveSites(sites: MonitoredSite[]): void {
 
 export function parseSitesFromData(data: Array<{ name: string; url: string }>): MonitoredSite[] {
   // Normalizes imported rows (Excel/CSV) into the internal `MonitoredSite` shape.
-  return data.map((item, index) => ({
-    id: `site-${index}-${Date.now()}`,
-    name: item.name.trim(),
-    url: item.url.trim(),
-    category: categorize(item.name),
-    currentStatus: "unknown" as SiteStatus,
-    httpCode: null,
-    responseTime: null,
-    lastChecked: null,
-    history: [],
-  }))
+  const byId = new Map<string, MonitoredSite>()
+  for (const item of data) {
+    const name = item.name.trim()
+    const url = item.url.trim()
+    if (!name || !url) continue
+
+    const id = buildStableSiteExternalId({ name, url })
+    if (byId.has(id)) continue
+
+    byId.set(id, {
+      id,
+      name,
+      url,
+      category: categorize(name),
+      currentStatus: "unknown" as SiteStatus,
+      httpCode: null,
+      responseTime: null,
+      lastChecked: null,
+      history: [],
+    })
+  }
+  return [...byId.values()]
 }
 
 /** Compara só o que a tabela exibe (evita re-render / novo histórico quando nada mudou). */
@@ -66,6 +86,40 @@ export function updateSiteCheck(site: MonitoredSite, check: SiteCheck): Monitore
     lastChecked: check.timestamp,
     history,
   }
+}
+
+function migrateSitesToStableIds(sites: MonitoredSite[]): { sites: MonitoredSite[]; changed: boolean } {
+  const byStableId = new Map<string, MonitoredSite>()
+  let changed = false
+
+  for (const site of sites) {
+    const stableId = buildStableSiteExternalId({ name: site.name, url: site.url })
+    const normalized = site.id === stableId ? site : { ...site, id: stableId }
+    if (site.id !== stableId) changed = true
+
+    const previous = byStableId.get(stableId)
+    if (!previous) {
+      byStableId.set(stableId, normalized)
+      continue
+    }
+
+    changed = true
+    byStableId.set(stableId, pickPreferredSite(previous, normalized))
+  }
+
+  const migrated = [...byStableId.values()]
+  if (migrated.length !== sites.length) changed = true
+  return { sites: migrated, changed }
+}
+
+function pickPreferredSite(a: MonitoredSite, b: MonitoredSite): MonitoredSite {
+  const aTs = a.lastChecked ? new Date(a.lastChecked).getTime() : 0
+  const bTs = b.lastChecked ? new Date(b.lastChecked).getTime() : 0
+  if (aTs > bTs) return a
+  if (bTs > aTs) return b
+  if (a.history.length > b.history.length) return a
+  if (b.history.length > a.history.length) return b
+  return a
 }
 
 export function calculateStats(sites: MonitoredSite[]): DashboardStats {

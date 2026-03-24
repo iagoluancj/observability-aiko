@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { createLogger } from "@/lib/logger"
 import { isMonitorSyncAuthorized } from "@/lib/monitor-api-auth"
 import { getSupabaseAdmin } from "@/lib/supabase/admin"
+import { buildSiteIdentityKey } from "@/lib/site-identity"
 import {
   parseAvailabilityLogPolicyFromEnv,
   shouldPersistAvailabilityRow,
@@ -29,6 +30,16 @@ const bodySchema = z.object({
     }),
   ),
 })
+
+type AvailabilityLogEntry = z.infer<typeof bodySchema>["entries"][number]
+
+interface ExistingSiteRow {
+  id: string
+  external_id: string
+  name: string
+  url: string
+  updated_at: string
+}
 
 function statusForRow(
   s: z.infer<typeof bodySchema>["entries"][number]["check"]["status"],
@@ -92,6 +103,137 @@ async function fetchLatestAvailabilityBySite(
   return map
 }
 
+function isStableExternalId(externalId: string): boolean {
+  return /^site-[a-z0-9-]+-[a-z0-9]+$/.test(externalId)
+}
+
+function parseUpdatedAtMs(iso: string): number {
+  const t = new Date(iso).getTime()
+  return Number.isFinite(t) ? t : 0
+}
+
+function pickPreferredExistingSite(a: ExistingSiteRow, b: ExistingSiteRow): ExistingSiteRow {
+  const aStable = isStableExternalId(a.external_id)
+  const bStable = isStableExternalId(b.external_id)
+  if (aStable !== bStable) return aStable ? a : b
+  return parseUpdatedAtMs(a.updated_at) >= parseUpdatedAtMs(b.updated_at) ? a : b
+}
+
+async function fetchExistingSitesForEntries(
+  entries: AvailabilityLogEntry[],
+): Promise<Map<string, ExistingSiteRow>> {
+  const supabase = getSupabaseAdmin()
+  const byId = new Map<string, ExistingSiteRow>()
+  if (!supabase || entries.length === 0) return byId
+
+  const externalIds = [...new Set(entries.map((e) => e.externalId))]
+  const urls = [...new Set(entries.map((e) => e.url))]
+
+  const [byExternalRes, byUrlRes] = await Promise.all([
+    supabase
+      .from("monitored_sites")
+      .select("id, external_id, name, url, updated_at")
+      .in("external_id", externalIds),
+    supabase
+      .from("monitored_sites")
+      .select("id, external_id, name, url, updated_at")
+      .in("url", urls),
+  ])
+
+  if (byExternalRes.error) {
+    log.warn("Erro ao buscar monitored_sites por external_id", { message: byExternalRes.error.message })
+  }
+  if (byUrlRes.error) {
+    log.warn("Erro ao buscar monitored_sites por url", { message: byUrlRes.error.message })
+  }
+
+  for (const row of [...(byExternalRes.data ?? []), ...(byUrlRes.data ?? [])] as ExistingSiteRow[]) {
+    byId.set(row.id, row)
+  }
+  return byId
+}
+
+async function reconcileLegacyExternalIds(
+  entries: AvailabilityLogEntry[],
+  nowIso: string,
+): Promise<void> {
+  const supabase = getSupabaseAdmin()
+  if (!supabase || entries.length === 0) return
+
+  const existing = await fetchExistingSitesForEntries(entries)
+  if (existing.size === 0) return
+
+  const byExternalId = new Map<string, ExistingSiteRow>()
+  const byIdentity = new Map<string, ExistingSiteRow>()
+
+  for (const row of existing.values()) {
+    byExternalId.set(row.external_id, row)
+    const key = buildSiteIdentityKey({ name: row.name, url: row.url })
+    const prev = byIdentity.get(key)
+    if (!prev) {
+      byIdentity.set(key, row)
+      continue
+    }
+    byIdentity.set(key, pickPreferredExistingSite(prev, row))
+  }
+
+  const updates: Array<{
+    id: string
+    external_id: string
+    name: string
+    url: string
+    category: AvailabilityLogEntry["category"]
+    updated_at: string
+  }> = []
+
+  for (const e of entries) {
+    if (byExternalId.has(e.externalId)) continue
+    const key = buildSiteIdentityKey({ name: e.name, url: e.url })
+    const legacy = byIdentity.get(key)
+    if (!legacy) continue
+    updates.push({
+      id: legacy.id,
+      external_id: e.externalId,
+      name: e.name,
+      url: e.url,
+      category: e.category,
+      updated_at: nowIso,
+    })
+    byExternalId.set(e.externalId, {
+      ...legacy,
+      external_id: e.externalId,
+      name: e.name,
+      url: e.url,
+      updated_at: nowIso,
+    })
+  }
+
+  if (updates.length === 0) return
+
+  await Promise.all(
+    updates.map(async (u) => {
+      const { error } = await supabase
+        .from("monitored_sites")
+        .update({
+          external_id: u.external_id,
+          name: u.name,
+          url: u.url,
+          category: u.category,
+          updated_at: u.updated_at,
+        })
+        .eq("id", u.id)
+
+      if (error) {
+        log.warn("Falha ao reconciliar external_id legado", {
+          siteId: u.id,
+          externalId: u.external_id,
+          message: error.message,
+        })
+      }
+    }),
+  )
+}
+
 export async function POST(request: NextRequest) {
   if (!isMonitorSyncAuthorized(request)) {
     return NextResponse.json({ error: "Não autorizado" }, { status: 401 })
@@ -123,6 +265,8 @@ export async function POST(request: NextRequest) {
   }
 
   const now = new Date().toISOString()
+  await reconcileLegacyExternalIds(entries, now)
+
   const siteRows = entries.map((e) => ({
     external_id: e.externalId,
     name: e.name,
