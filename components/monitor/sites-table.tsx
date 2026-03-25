@@ -259,7 +259,7 @@ function AvailabilityCell({
 
   const primaryText = primaryUnavailable
     ? `${formatAvailableMinutes(unavailMin)} indispon.`
-    : formatAvailableMinutes(availMin)
+    : `${formatAvailableMinutes(availMin)} dispon.`
 
   const secondaryText = primaryUnavailable
     ? `${formatAvailableMinutes(availMin)} dispon.`
