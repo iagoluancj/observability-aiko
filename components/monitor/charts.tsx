@@ -116,9 +116,9 @@ export function Charts({ sites, stats, dbSummary, dbLoading }: ChartsProps) {
   const historyData = timelineFromDb ?? historyDataLocal.map(h => ({ ...h, label: h.check, checks: 0 }))
   const supabasePeriodLabel =
     dbConfigured && dbSummary ? getAvailabilityWindowLabel(dbSummary.hours) : ""
-  const historyTitle = timelineFromDb
-    ? `Historico (Supabase · ${supabasePeriodLabel})`
-    : "Historico - Tempo Medio"
+  const historyTitle = !timelineFromDb
+    ? `Historico de tempo de resposta`
+    : "Historico - Média MS"
 
   return (
     <div className="flex flex-col gap-3">

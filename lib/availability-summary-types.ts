@@ -19,6 +19,10 @@ export interface AvailabilitySummaryPerSite {
    */
   availableMinutesApprox: number | null
   avgResponseMs: number | null
+  /** Confiança do SLA calculada por cobertura/observação do job. */
+  slaConfidencePct: number | null
+  /** Minutos dentro da janela sem cobertura observável (para SLA). */
+  unknownMinutesApprox: number | null
   /** Últimas checagens gravadas (mais recente primeiro), máx. 12 */
   recentSamples: AvailabilityRecentSample[]
 }
@@ -41,6 +45,10 @@ export interface AvailabilitySummaryTotals {
   /** Mesma lógica que por site, sobre todas as amostras da janela */
   availableMinutesApprox: number | null
   avgResponseMs: number | null
+  /** Confiança do SLA (derivada da cobertura de observação do job). */
+  slaConfidencePct: number | null
+  /** Minutos sem cobertura observável no período. */
+  unknownMinutesApprox: number | null
 }
 
 export type AvailabilitySummaryResponse =

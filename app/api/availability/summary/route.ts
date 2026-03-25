@@ -14,6 +14,10 @@ import {
   integrateAvailabilityWindow,
   uptimePctFromMs,
 } from "@/lib/availability-time-weighted"
+import {
+  computeObservationCoverageConfidence,
+  loadObservationCoverageConfigFromEnv,
+} from "@/lib/availability-sla-confidence"
 
 const RECENT_SAMPLES_PER_SITE = 12
 const MAX_CHECKS_FETCH = 80000
@@ -90,6 +94,10 @@ function buildSummary(
   seedBySiteId: Map<string, PersistedStatus | null>,
   windowStartMs: number,
   windowEndMs: number,
+  observationCoverage: {
+    slaConfidencePct: number | null
+    unknownMinutesApprox: number | null
+  },
 ): Extract<AvailabilitySummaryResponse, { configured: true }> {
   const metaBySiteId = new Map(siteRows.map(s => [s.id, s]))
   const windowMs = windowEndMs - windowStartMs
@@ -161,6 +169,8 @@ function buildSummary(
         uptimePct: null,
         availableMinutesApprox: null,
         avgResponseMs: null,
+        slaConfidencePct: observationCoverage.slaConfidencePct,
+        unknownMinutesApprox: observationCoverage.unknownMinutesApprox,
         recentSamples: [],
       }
     }
@@ -184,6 +194,8 @@ function buildSummary(
         uptimePct: null,
         availableMinutesApprox: null,
         avgResponseMs: null,
+        slaConfidencePct: observationCoverage.slaConfidencePct,
+        unknownMinutesApprox: observationCoverage.unknownMinutesApprox,
         recentSamples: [],
       }
     }
@@ -237,6 +249,8 @@ function buildSummary(
       uptimePct,
       availableMinutesApprox,
       avgResponseMs: rtN > 0 ? Math.round(sumRt / rtN) : null,
+      slaConfidencePct: observationCoverage.slaConfidencePct,
+      unknownMinutesApprox: observationCoverage.unknownMinutesApprox,
       recentSamples: recentBySiteId.get(site.id) ?? [],
     }
   })
@@ -253,9 +267,69 @@ function buildSummary(
         ? Math.round(((sumUptimePct / sitesWithUptime) / 100) * (windowMs / 60000))
         : null,
     avgResponseMs: rtNAll > 0 ? Math.round(sumRtAll / rtNAll) : null,
+    slaConfidencePct: observationCoverage.slaConfidencePct,
+    unknownMinutesApprox: observationCoverage.unknownMinutesApprox,
   }
 
   return { configured: true, hours, perSite, timeline, totals }
+}
+
+async function fetchOkCollectionRunsForConfidence(params: {
+  supabase: ReturnType<typeof getSupabaseAdmin>
+  windowStartMs: number
+  windowEndMs: number
+}): Promise<number[] | null> {
+  const { supabase, windowStartMs, windowEndMs } = params
+  if (!supabase) return null
+
+  const windowStartIso = new Date(windowStartMs).toISOString()
+  const windowEndIso = new Date(windowEndMs).toISOString()
+
+  try {
+    // Anchor: último run ok <= windowStart (para o segmento inicial).
+    const { data: lastBefore, error: errBefore } = await supabase
+      .from("availability_collection_runs")
+      .select("run_at")
+      .eq("status", "ok")
+      .lte("run_at", windowStartIso)
+      .order("run_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+
+    if (errBefore) throw errBefore
+
+    // Runs ok dentro da janela (para detectar gaps reais).
+    // Limite conservador para não explodir em janelas enormes.
+    const MAX_OK_RUNS = 20000
+    const { data: runsInWindow, error: errInWindow } = await supabase
+      .from("availability_collection_runs")
+      .select("run_at")
+      .eq("status", "ok")
+      .gte("run_at", windowStartIso)
+      .lte("run_at", windowEndIso)
+      .order("run_at", { ascending: true })
+      .limit(MAX_OK_RUNS)
+
+    if (errInWindow) throw errInWindow
+
+    const ms: number[] = []
+    if (lastBefore?.run_at) {
+      const t = new Date(lastBefore.run_at).getTime()
+      if (Number.isFinite(t)) ms.push(t)
+    }
+
+    for (const row of (runsInWindow ?? []) as Array<{ run_at: string }>) {
+      const t = new Date(row.run_at).getTime()
+      if (Number.isFinite(t)) ms.push(t)
+    }
+
+    return ms.length ? ms : []
+  } catch (e) {
+    log.warn("Não foi possível calcular cobertura por availability_collection_runs", {
+      message: e instanceof Error ? e.message : String(e),
+    })
+    return null
+  }
 }
 
 export async function GET(request: NextRequest) {
@@ -286,6 +360,8 @@ export async function GET(request: NextRequest) {
         uptimePct: null,
         availableMinutesApprox: null,
         avgResponseMs: null,
+        slaConfidencePct: null,
+        unknownMinutesApprox: null,
       },
     }
     return NextResponse.json(empty)
@@ -294,6 +370,26 @@ export async function GET(request: NextRequest) {
   const windowEndMs = Date.now()
   const windowStartMs = windowEndMs - hours * 3600 * 1000
   const since = new Date(windowStartMs).toISOString()
+
+  const observationRunsOkMs = await fetchOkCollectionRunsForConfidence({
+    supabase,
+    windowStartMs,
+    windowEndMs,
+  })
+
+  const observationCoverage =
+    observationRunsOkMs === null
+      ? { slaConfidencePct: null, unknownMinutesApprox: null }
+      : (() => {
+          const cfg = loadObservationCoverageConfigFromEnv()
+          const res = computeObservationCoverageConfidence({
+            windowStartMs,
+            windowEndMs,
+            okRunAtMs: observationRunsOkMs,
+            cfg,
+          })
+          return { slaConfidencePct: res.confidencePct, unknownMinutesApprox: res.unknownMinutesApprox }
+        })()
 
   const { data: siteRows, error: siteErr } = await supabase
     .from("monitored_sites")
@@ -317,6 +413,7 @@ export async function GET(request: NextRequest) {
       new Map(),
       windowStartMs,
       windowEndMs,
+      observationCoverage,
     )
     return NextResponse.json(summary)
   }
@@ -351,6 +448,7 @@ export async function GET(request: NextRequest) {
     seedBySiteId,
     windowStartMs,
     windowEndMs,
+    observationCoverage,
   )
   return NextResponse.json(summary)
 }

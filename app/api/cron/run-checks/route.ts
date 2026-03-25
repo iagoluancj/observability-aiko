@@ -59,6 +59,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ ok: true, checked: 0, message: "Nenhum site cadastrado" })
   }
 
+  const runAt = new Date().toISOString()
+
   const inserts: Array<{
     site_id: string
     checked_at: string
@@ -85,6 +87,21 @@ export async function GET(request: NextRequest) {
   if (insertError) {
     log.error("Erro ao inserir availability_checks", { message: insertError.message })
     return NextResponse.json({ error: insertError.message }, { status: 500 })
+  }
+
+  // Registra a execução do job para cálculo de cobertura/confiança do SLA.
+  try {
+    await supabase.from("availability_collection_runs").insert({
+      run_at: runAt,
+      source: "cron",
+      status: "ok",
+      checked_count: inserts.length,
+      error_message: null,
+    })
+  } catch (e) {
+    log.warn("Falha ao registrar availability_collection_runs", {
+      message: e instanceof Error ? e.message : String(e),
+    })
   }
 
   log.info("Cron concluído", { checked: inserts.length })

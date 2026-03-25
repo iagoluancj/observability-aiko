@@ -28,6 +28,14 @@ function logAvailabilityBatch(
   sites: MonitoredSite[],
   checks: Array<{ siteId: string; check: SiteCheck }>,
 ) {
+  const enabledRaw = process.env.NEXT_PUBLIC_AVAILABILITY_LOG_ENABLED
+  const enabled =
+    enabledRaw == null || enabledRaw === ""
+      ? true
+      : enabledRaw === "true" || enabledRaw === "1"
+
+  if (!enabled) return
+
   if (checks.length === 0) return
 
   const entries = checks

@@ -30,6 +30,10 @@ export interface SiteAvailabilityRow {
   unstableSamples: number
   offlineSamples: number
   avgResponseMs: number | null
+  /** 0..100 (1 casa decimal) ou null */
+  slaConfidencePct: number | null
+  /** minutos sem cobertura observável no período */
+  unknownMinutesApprox: number | null
   recentSamples: AvailabilityRecentSample[]
 }
 
@@ -156,6 +160,8 @@ function AvailabilityDetailsBody({ row, windowLabel }: { row: SiteAvailabilityRo
   const h = row.windowHours
   const windowMin = windowTotalMinutes(h)
   const unavailMin = Math.max(0, windowMin - mins)
+  const confidence = row.slaConfidencePct
+  const unknownMin = row.unknownMinutesApprox
   return (
     <div className="space-y-3 border-t border-border pt-3 text-xs leading-relaxed text-card-foreground">
       <div>
@@ -181,13 +187,25 @@ function AvailabilityDetailsBody({ row, windowLabel }: { row: SiteAvailabilityRo
         </p>
       </div>
       <div>
-        <p className="mb-1 font-semibold text-card-foreground">Registros na janela (Supabase)</p>
+        <p className="mb-1 font-semibold text-card-foreground">Registros na janela</p>
         <p className="font-mono text-[11px] text-muted-foreground">
           Online: {row.onlineSamples} · Instável: {row.unstableSamples} · Offline: {row.offlineSamples} · Total: {row.sampleCount}
         </p>
         <p className="mt-1 text-muted-foreground">
           Tempo médio de resposta:{" "}
           <strong className="text-card-foreground">{row.avgResponseMs != null ? `${row.avgResponseMs} ms` : "—"}</strong>
+        </p>
+        <p className="mt-2 text-muted-foreground">
+          Confiança do SLA:{" "}
+          <strong className="text-card-foreground">
+            {confidence != null ? `${confidence.toFixed(1)}%` : "—"}
+          </strong>
+        </p>
+        <p className="mt-1 text-muted-foreground">
+          Tempo sem cobertura observável:{" "}
+          <strong className="text-card-foreground">
+            {unknownMin != null ? formatAvailableMinutes(unknownMin) : "—"}
+          </strong>
         </p>
       </div>
     </div>
@@ -466,7 +484,7 @@ export const SitesTable = memo(function SitesTable({
             className="h-9 shrink-0 gap-1.5 border-border px-2.5 text-xs text-card-foreground cursor-pointer hover:bg-muted/50 hover:text-foreground"
           >
             <ArrowLeftRight className="h-3.5 w-3.5" />
-            {availabilityPrimary.global ? "Disponível (todas)" : "Indisponível (todas)"}
+            {availabilityPrimary.global ? "Disponível" : "Indisponível"}
           </Button>
           <select
             value={statusFilter}

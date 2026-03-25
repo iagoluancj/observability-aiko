@@ -60,6 +60,8 @@ export function Dashboard() {
           unstableSamples: p.unstableSamples,
           offlineSamples: p.offlineSamples,
           avgResponseMs: p.avgResponseMs,
+          slaConfidencePct: p.slaConfidencePct,
+          unknownMinutesApprox: p.unknownMinutesApprox,
           recentSamples: p.recentSamples,
         }
       }

@@ -438,6 +438,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: insertError.message }, { status: 500 })
   }
 
+  // Registra a execução do job/poll para cálculo de cobertura/confiança do SLA.
+  // Neste endpoint, “checked_count” representa o quanto efetivamente foi persistido em `availability_checks`.
+  try {
+    await supabase.from("availability_collection_runs").insert({
+      run_at: now,
+      source: "app",
+      status: "ok",
+      checked_count: inserts.length,
+      error_message: null,
+    })
+  } catch (e) {
+    log.warn("Falha ao registrar availability_collection_runs", {
+      message: e instanceof Error ? e.message : String(e),
+    })
+  }
+
   log.debug("Disponibilidade (esparsa)", { logged: inserts.length, skipped })
   return NextResponse.json({ ok: true, logged: inserts.length, skipped })
 }
