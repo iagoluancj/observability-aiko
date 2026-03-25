@@ -31,12 +31,6 @@ export interface SiteAvailabilityRow {
   offlineSamples: number
   avgResponseMs: number | null
   recentSamples: AvailabilityRecentSample[]
-  quality: {
-    maxCarryForwardMs: number
-    unknownMs: number
-    confidencePct: number
-    largestGapMs: number
-  }
 }
 
 interface SitesTableProps {
@@ -162,7 +156,6 @@ function AvailabilityDetailsBody({ row, windowLabel }: { row: SiteAvailabilityRo
   const h = row.windowHours
   const windowMin = windowTotalMinutes(h)
   const unavailMin = Math.max(0, windowMin - mins)
-  const unknownMin = Math.max(0, Math.round(row.quality.unknownMs / 60000))
   return (
     <div className="space-y-3 border-t border-border pt-3 text-xs leading-relaxed text-card-foreground">
       <div>
@@ -195,13 +188,6 @@ function AvailabilityDetailsBody({ row, windowLabel }: { row: SiteAvailabilityRo
         <p className="mt-1 text-muted-foreground">
           Tempo médio de resposta:{" "}
           <strong className="text-card-foreground">{row.avgResponseMs != null ? `${row.avgResponseMs} ms` : "—"}</strong>
-        </p>
-        <p className="mt-1 text-muted-foreground">
-          Confiança dos dados:{" "}
-          <strong className="text-card-foreground">{row.quality.confidencePct.toFixed(1)}%</strong>
-          {" · "}
-          Sem sinal:{" "}
-          <strong className="text-card-foreground">{formatAvailableMinutes(unknownMin)}</strong>
         </p>
       </div>
     </div>

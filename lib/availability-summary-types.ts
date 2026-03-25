@@ -4,36 +4,6 @@ export interface AvailabilityRecentSample {
   responseTimeMs: number | null
 }
 
-export interface AvailabilityDataQuality {
-  /**
-   * Janela máxima (em ms) em que um estado pode ser carregado adiante sem nova checagem.
-   * Após isso, o período entra como "unknown" (sem confiança).
-   */
-  maxCarryForwardMs: number
-  /** Quantidade de milissegundos na janela coberta por estado unknown (sem confiança). */
-  unknownMs: number
-  /** Percentual da janela coberta por dados confiáveis (0..100). */
-  confidencePct: number
-  /**
-   * Maior lacuna entre sinais (ms) no período integrado, considerando bordas da janela.
-   * Útil para alerta operacional.
-   */
-  largestGapMs: number
-}
-
-export interface AvailabilityCollectionHealth {
-  expectedIntervalMs: number
-  maxCarryForwardMs: number
-  staleAfterMs: number
-  coverageWindowHours: number
-  coveragePct: number
-  gapCount: number
-  largestGapMs: number
-  lastRunAt: string | null
-  staleNow: boolean
-  staleForMs: number | null
-}
-
 export interface AvailabilitySummaryPerSite {
   externalId: string
   name: string
@@ -51,7 +21,6 @@ export interface AvailabilitySummaryPerSite {
   avgResponseMs: number | null
   /** Últimas checagens gravadas (mais recente primeiro), máx. 12 */
   recentSamples: AvailabilityRecentSample[]
-  quality: AvailabilityDataQuality
 }
 
 export interface AvailabilitySummaryTimelinePoint {
@@ -72,10 +41,6 @@ export interface AvailabilitySummaryTotals {
   /** Mesma lógica que por site, sobre todas as amostras da janela */
   availableMinutesApprox: number | null
   avgResponseMs: number | null
-  /** Média simples da confiança por site (apenas sites com sinal na janela). */
-  confidencePct: number | null
-  /** Soma de `unknownMs` em todos os sites com sinal. */
-  unknownMsTotal: number
 }
 
 export type AvailabilitySummaryResponse =
@@ -86,5 +51,4 @@ export type AvailabilitySummaryResponse =
       perSite: AvailabilitySummaryPerSite[]
       timeline: AvailabilitySummaryTimelinePoint[]
       totals: AvailabilitySummaryTotals
-      collection: AvailabilityCollectionHealth | null
     }
