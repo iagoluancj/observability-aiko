@@ -117,8 +117,8 @@ export function Charts({ sites, stats, dbSummary, dbLoading }: ChartsProps) {
   const supabasePeriodLabel =
     dbConfigured && dbSummary ? getAvailabilityWindowLabel(dbSummary.hours) : ""
   const historyTitle = !timelineFromDb
-    ? `Historico de tempo de resposta`
-    : "Historico - Média MS"
+    ? `Historico de tempo de resposta.`
+    : "Historico - Média MS" 
 
   return (
     <div className="flex flex-col gap-3">
