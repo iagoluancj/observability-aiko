@@ -19,7 +19,7 @@ import {
   loadObservationCoverageConfigFromEnv,
 } from "@/lib/availability-sla-confidence"
 
-const RECENT_SAMPLES_PER_SITE = 12
+const RECENT_SAMPLES_PER_SITE = 5
 const MAX_CHECKS_FETCH = 80000
 const log = createLogger("api:availability-summary")
 
@@ -448,25 +448,55 @@ export async function GET(request: NextRequest) {
 
   const seedBySiteId = await fetchSeedStatusBefore(siteIds, since)
 
-  const { data: checkRows, error: checkErr } = await supabase
-    .from("availability_checks")
-    .select("checked_at, status, response_time_ms, site_id")
-    .in("site_id", siteIds)
-    .gte("checked_at", since)
-    .order("checked_at", { ascending: true })
-    .limit(MAX_CHECKS_FETCH)
-
-  if (checkErr) {
-    log.error("Erro ao listar availability_checks", { message: checkErr.message })
-    return NextResponse.json({ error: checkErr.message }, { status: 500 })
-  }
-
-  const checks = (checkRows ?? []) as Array<{
+  const CHECKS_PAGE_SIZE = 1000
+  const expectedChecksByWindow = Math.ceil(hours * 60) * Math.max(1, siteIds.length)
+  const maxChecksDynamic = Math.max(
+    MAX_CHECKS_FETCH,
+    Math.min(300000, expectedChecksByWindow * 2),
+  )
+  const checks: Array<{
     checked_at: string
     status: string
     response_time_ms: number | null
     site_id: string
-  }>
+  }> = []
+  let checksOffset = 0
+
+  while (checks.length < maxChecksDynamic) {
+    const pageEnd = Math.min(checksOffset + CHECKS_PAGE_SIZE - 1, maxChecksDynamic - 1)
+    const { data: checkRows, error: checkErr } = await supabase
+      .from("availability_checks")
+      .select("checked_at, status, response_time_ms, site_id")
+      .in("site_id", siteIds)
+      .gte("checked_at", since)
+      .order("checked_at", { ascending: true })
+      .range(checksOffset, pageEnd)
+
+    if (checkErr) {
+      log.error("Erro ao listar availability_checks", { message: checkErr.message })
+      return NextResponse.json({ error: checkErr.message }, { status: 500 })
+    }
+
+    const batch = (checkRows ?? []) as Array<{
+      checked_at: string
+      status: string
+      response_time_ms: number | null
+      site_id: string
+    }>
+
+    if (batch.length === 0) break
+    checks.push(...batch)
+    if (batch.length < CHECKS_PAGE_SIZE) break
+    checksOffset += CHECKS_PAGE_SIZE
+  }
+
+  if (checks.length >= maxChecksDynamic) {
+    log.warn("Resumo de availability_checks truncado por limite de segurança", {
+      maxChecksDynamic,
+      siteCount: siteIds.length,
+      hours,
+    })
+  }
 
   const summary = buildSummary(
     hours,
