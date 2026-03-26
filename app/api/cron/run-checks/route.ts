@@ -3,6 +3,13 @@ import { checkUrl } from "@/lib/check-url"
 import { deriveSiteCheckFromUrlResult } from "@/lib/derive-site-check"
 import { createLogger } from "@/lib/logger"
 import { getSupabaseAdmin } from "@/lib/supabase/admin"
+import {
+  parseAvailabilityLogPolicyFromEnv,
+  shouldPersistAvailabilityRow,
+  type IncomingAvailabilityCheck,
+  type PersistedStatus,
+  type PreviousAvailabilityRow,
+} from "@/lib/availability-log-policy"
 
 const log = createLogger("api:cron-run-checks")
 
@@ -14,6 +21,60 @@ export const dynamic = "force-dynamic"
 export const maxDuration = 300
 
 const BATCH = 8
+
+async function fetchLatestAvailabilityBySite(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  siteIds: string[],
+): Promise<Map<string, PreviousAvailabilityRow>> {
+  const map = new Map<string, PreviousAvailabilityRow>()
+  if (!supabase || siteIds.length === 0) return map
+
+  const { data, error } = await supabase.rpc("latest_availability_per_site", {
+    p_site_ids: siteIds,
+  })
+
+  if (!error && data && Array.isArray(data)) {
+    for (const row of data as Array<{
+      site_id: string
+      checked_at: string
+      status: string
+      response_time_ms: number | null
+    }>) {
+      map.set(row.site_id, {
+        status: row.status as PersistedStatus,
+        checkedAt: row.checked_at,
+        responseTimeMs: row.response_time_ms,
+      })
+    }
+    return map
+  }
+
+  log.warn("RPC latest_availability_per_site indisponível; fallback por site", {
+    message: error?.message,
+  })
+
+  await Promise.all(
+    siteIds.map(async (id) => {
+      const { data: one } = await supabase
+        .from("availability_checks")
+        .select("checked_at, status, response_time_ms")
+        .eq("site_id", id)
+        .order("checked_at", { ascending: false })
+        .limit(1)
+        .maybeSingle()
+
+      if (!one) return
+
+      map.set(id, {
+        status: one.status as PersistedStatus,
+        checkedAt: one.checked_at,
+        responseTimeMs: one.response_time_ms,
+      })
+    }),
+  )
+
+  return map
+}
 
 function isCronAuthorized(request: NextRequest): boolean {
   const secret = process.env.CRON_SECRET
@@ -61,7 +122,7 @@ export async function GET(request: NextRequest) {
 
   const runAt = new Date().toISOString()
 
-  const inserts: Array<{
+  const computedChecks: Array<{
     site_id: string
     checked_at: string
     status: string
@@ -73,7 +134,7 @@ export async function GET(request: NextRequest) {
     const t0 = Date.now()
     const result = await checkUrl(row.url)
     const check = deriveSiteCheckFromUrlResult(result, Date.now() - t0)
-    inserts.push({
+    computedChecks.push({
       site_id: row.id,
       checked_at: check.timestamp,
       status: check.status,
@@ -82,10 +143,71 @@ export async function GET(request: NextRequest) {
     })
   })
 
-  const { error: insertError } = await supabase.from("availability_checks").insert(inserts)
+  const policy = parseAvailabilityLogPolicyFromEnv()
+  const siteIds = sites.map(s => s.id)
+  const latestBySite = await fetchLatestAvailabilityBySite(supabase, siteIds)
+
+  const persisted: Array<{
+    site_id: string
+    checked_at: string
+    status: PersistedStatus
+    http_code: number | null
+    response_time_ms: number | null
+  }> = []
+
+  let checked_count = 0
+  let skipped = 0
+
+  for (const c of computedChecks) {
+    const st = c.status as PersistedStatus
+    const next: IncomingAvailabilityCheck = {
+      status: st,
+      responseTimeMs: c.response_time_ms,
+      checkedAt: c.checked_at,
+    }
+
+    const prev = latestBySite.get(c.site_id) ?? null
+    if (!shouldPersistAvailabilityRow(prev, next, policy)) {
+      skipped += 1
+      continue
+    }
+
+    persisted.push({
+      site_id: c.site_id,
+      checked_at: c.checked_at,
+      status: st,
+      http_code: c.http_code,
+      response_time_ms: c.response_time_ms,
+    })
+
+    checked_count += 1
+    latestBySite.set(c.site_id, {
+      status: st,
+      checkedAt: c.checked_at,
+      responseTimeMs: c.response_time_ms,
+    })
+  }
+
+  let insertError: { message: string } | null = null
+  if (persisted.length > 0) {
+    const r = await supabase.from("availability_checks").insert(persisted)
+    insertError = r.error
+  }
 
   if (insertError) {
     log.error("Erro ao inserir availability_checks", { message: insertError.message })
+    // Registra o run como erro para o cálculo de confiança.
+    try {
+      await supabase.from("availability_collection_runs").insert({
+        run_at: runAt,
+        source: "cron",
+        status: "error",
+        checked_count,
+        error_message: insertError.message,
+      })
+    } catch {
+      // ignore
+    }
     return NextResponse.json({ error: insertError.message }, { status: 500 })
   }
 
@@ -95,7 +217,7 @@ export async function GET(request: NextRequest) {
       run_at: runAt,
       source: "cron",
       status: "ok",
-      checked_count: inserts.length,
+      checked_count,
       error_message: null,
     })
   } catch (e) {
@@ -104,6 +226,6 @@ export async function GET(request: NextRequest) {
     })
   }
 
-  log.info("Cron concluído", { checked: inserts.length })
-  return NextResponse.json({ ok: true, checked: inserts.length })
+  log.info("Cron concluído", { checked: checked_count, skipped })
+  return NextResponse.json({ ok: true, checked: checked_count, skipped })
 }
