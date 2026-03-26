@@ -196,9 +196,9 @@ function AvailabilityDetailsBody({ row, windowLabel }: { row: SiteAvailabilityRo
           <strong className="text-card-foreground">{row.avgResponseMs != null ? `${row.avgResponseMs} ms` : "—"}</strong>
         </p>
         <p className="mt-2 text-muted-foreground">
-          Confiança do SLA:{" "}
+          Confiabilidade da medição:{" "}
           <strong className="text-card-foreground">
-            {confidence != null ? `${confidence.toFixed(1)}%` : "—"}
+            {confidence != null ? `${confidence.toFixed(2)}%` : "—"}
           </strong>
         </p>
         <p className="mt-1 text-muted-foreground">
