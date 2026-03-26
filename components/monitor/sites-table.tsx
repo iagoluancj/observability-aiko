@@ -183,7 +183,7 @@ function AvailabilityDetailsBody({ row, windowLabel }: { row: SiteAvailabilityRo
       <div>
         <p className="mb-1 font-semibold text-card-foreground">Como é calculado</p>
         <p className="text-muted-foreground">
-          Usamos o último estado conhecido antes da janela e cada <strong className="text-card-foreground">registro</strong> gravado no DB como mudança de estado; entre registros o estado permanece até o próximo. Só há poucos registros quando nada muda (política esparsa) — o gráfico de tempo ainda reflete a duração real na janela.
+          Usamos o último estado conhecido antes da janela e cada <strong className="text-card-foreground">registro</strong> gravado no DB como mudança de estado; entre registros o estado permanece até o próximo. Se não houver registros, o estado permanece o mesmo que o último estado conhecido antes da janela (política esparsa).
         </p>
       </div>
       <div>
