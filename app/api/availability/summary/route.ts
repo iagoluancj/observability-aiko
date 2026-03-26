@@ -299,18 +299,46 @@ async function fetchOkCollectionRunsForConfidence(params: {
     if (errBefore) throw errBefore
 
     // Runs ok dentro da janela (para detectar gaps reais).
-    // Limite conservador para não explodir em janelas enormes.
-    const MAX_OK_RUNS = 20000
-    const { data: runsInWindow, error: errInWindow } = await supabase
-      .from("availability_collection_runs")
-      .select("run_at")
-      .eq("status", "ok")
-      .gte("run_at", windowStartIso)
-      .lte("run_at", windowEndIso)
-      .order("run_at", { ascending: true })
-      .limit(MAX_OK_RUNS)
+    // Pagina para não truncar em projetos com max rows = 1000.
+    const windowMs = Math.max(0, windowEndMs - windowStartMs)
+    const expectedPerMinuteRuns = Math.ceil(windowMs / 60000)
+    // Cap dinâmico: aguenta janelas grandes (ex.: 30d ~ 43k runs em 1/min)
+    // e ainda mantém um teto de segurança.
+    const MAX_OK_RUNS = Math.max(5000, Math.min(200000, expectedPerMinuteRuns * 3))
+    const PAGE_SIZE = 1000
+    const runsInWindow: Array<{ run_at: string }> = []
+    let offset = 0
 
-    if (errInWindow) throw errInWindow
+    while (runsInWindow.length < MAX_OK_RUNS) {
+      const pageEnd = Math.min(offset + PAGE_SIZE - 1, MAX_OK_RUNS - 1)
+      const { data: page, error: pageErr } = await supabase
+        .from("availability_collection_runs")
+        .select("run_at")
+        .eq("status", "ok")
+        .gte("run_at", windowStartIso)
+        .lte("run_at", windowEndIso)
+        .order("run_at", { ascending: true })
+        .range(offset, pageEnd)
+
+      if (pageErr) throw pageErr
+
+      const batch = (page ?? []) as Array<{ run_at: string }>
+      if (batch.length === 0) break
+
+      runsInWindow.push(...batch)
+      if (batch.length < PAGE_SIZE) break
+      offset += PAGE_SIZE
+    }
+
+    if (runsInWindow.length >= MAX_OK_RUNS) {
+      log.warn("Cobertura truncada por limite de segurança", {
+        windowStartIso,
+        windowEndIso,
+        maxOkRuns: MAX_OK_RUNS,
+      })
+      // Evita retornar confiança potencialmente enganosa em cenários extremos.
+      return null
+    }
 
     const ms: number[] = []
     if (lastBefore?.run_at) {
@@ -318,7 +346,7 @@ async function fetchOkCollectionRunsForConfidence(params: {
       if (Number.isFinite(t)) ms.push(t)
     }
 
-    for (const row of (runsInWindow ?? []) as Array<{ run_at: string }>) {
+    for (const row of runsInWindow) {
       const t = new Date(row.run_at).getTime()
       if (Number.isFinite(t)) ms.push(t)
     }
