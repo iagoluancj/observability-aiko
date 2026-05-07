@@ -38,7 +38,7 @@ export const DEFAULT_SITES = [
   { name: "WST", url: "https://wst.br.trackit.host/Login" },
   { name: "ANG", url: "https://ang.br.trackit.host/Login" },
   { name: "VRC", url: "https://vrc.br.trackit.host/Login" },
-  { name: "AMR", url: "https://amr.br.trackit.host/Login" },
+  { name: "AMR", url: "https://amr.br.trackit.host/" },
   { name: "TNS", url: "https://tns.br.trackit.host/Login" },
   { name: "GRE", url: "https://gre.aikodigital.io/#/login" },
   { name: "MNL", url: "https://mnl.br.trackit.host/Login" },
