@@ -17,7 +17,6 @@ export const DEFAULT_SITES = [
   { name: "OXE", url: "https://oxe.br.trackit.host/Login" },
   { name: "SDB", url: "https://sdb.br.trackit.host/Login" },
   { name: "RCF", url: "https://rcf.br.trackit.host/Login" },
-  { name: "SML", url: "https://sml.br.trackit.host/Login" },
   { name: "RXR", url: "https://rxr.br.trackit.host/Login" },
   { name: "RFT", url: "https://rft.br.trackit.host/Login" },
   { name: "CMA", url: "https://cma.cl.trackit.host/Login" },
@@ -45,4 +44,6 @@ export const DEFAULT_SITES = [
   { name: "MNL", url: "https://mnl.br.trackit.host/Login" },
   { name: "ATV", url: "https://atv.br.trackit.host/Login" },
   { name: "CNE", url: "https://qa.cnb.br.trackit.host/Login" },
+  { name: "BRC", url: "https://brc.br.trackit.host/Login" },
+  { name: "QA.BRC", url: "https://sso.aiko.digital/realms/qasbrc/protocol/openid-connect/auth?client_id=trackit&redirect_uri=https%3A%2F%2Fqa.brc.br.trackit.host%2Fsignin-oidc&response_type=code&scope=openid%20profile&code_challenge=ju84Q3Eau3u3pDS7ssfFzInFh4b9wx8ZGRaGOQGSL_s&code_challenge_method=S256&response_mode=form_post&nonce=639137684850655245.MzI1NDJmMTAtMDMzYy00ZTY5LTk5M2MtMzNlMTkwMjM1OTJiNzk1OGMxYzQtMTE0OS00ZjVkLTk3MDUtZTA3MmQ0MWZmZjdh&state=CfDJ8GvJ1nifyI9HrOiRybaGVaLI85DJBeS-wcIoNStzOdpl2CRM-uyXEMndgg4lHC2RYGTW3bujIBl47prFS9ETRS9fp-CWjBrziw9PULTicll08lNWBDh4VNyM0WZKxEezb36PrbqyRGqLAKCOmDrJFma14KagZlbP91UW_3vJQXxwNEfhYVo2CsxOm8wmWSS2zLoeU6YT4CX9J1eSvLIY5nfXX82Np6Ypd0BcCw0NTit9omExqCUbgkF9KxeIayUlz9cLgS08XXPRlyBqbuLw72pBYI7RWjwama9KMlPQqYCOiEvP1MTQMytMJnmMc6LUgqTD3u27N5-O1N89l6cwYKWD3MM1WMw3vLlQ1MRpwPxU9_nDsX8plBLxl9JAgAEQCg&x-client-SKU=ID_NETSTANDARD2_0&x-client-ver=6.10.0.0" },
 ]
