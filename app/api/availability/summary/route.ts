@@ -25,6 +25,82 @@ const log = createLogger("api:availability-summary")
 
 export const dynamic = "force-dynamic"
 
+function normalizeLooseText(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "")
+}
+
+function extractExternalIdSlug(externalId: string): string | null {
+  const m = externalId.match(/^site-(.+)-[a-z0-9]+$/i)
+  return m?.[1] ?? null
+}
+
+async function resolveSitesByLegacySlug(
+  externalIds: string[],
+  knownByExternalId: Map<string, { id: string; external_id: string; name: string }>,
+): Promise<Map<string, { id: string; external_id: string; name: string }>> {
+  const resolved = new Map<string, { id: string; external_id: string; name: string }>()
+  const missingExternalIds = externalIds.filter((ext) => !knownByExternalId.has(ext))
+  if (missingExternalIds.length === 0) return resolved
+
+  const supabase = getSupabaseAdmin()
+  if (!supabase) return resolved
+
+  const { data: allRows, error } = await supabase
+    .from("monitored_sites")
+    .select("id, external_id, name, updated_at")
+
+  if (error) {
+    log.warn("Falha ao buscar fallback de monitored_sites por nome", { message: error.message })
+    return resolved
+  }
+
+  const candidatesByNormalizedName = new Map<
+    string,
+    Array<{ id: string; external_id: string; name: string; updated_at: string }>
+  >()
+
+  for (const row of (allRows ?? []) as Array<{
+    id: string
+    external_id: string
+    name: string
+    updated_at: string
+  }>) {
+    const key = normalizeLooseText(row.name)
+    if (!key) continue
+    const list = candidatesByNormalizedName.get(key) ?? []
+    list.push(row)
+    candidatesByNormalizedName.set(key, list)
+  }
+
+  for (const ext of missingExternalIds) {
+    const slug = extractExternalIdSlug(ext)
+    if (!slug) continue
+    const key = normalizeLooseText(slug)
+    if (!key) continue
+    const candidates = candidatesByNormalizedName.get(key)
+    if (!candidates?.length) continue
+
+    const best = candidates.reduce((latest, row) => {
+      const latestMs = new Date(latest.updated_at).getTime()
+      const rowMs = new Date(row.updated_at).getTime()
+      return rowMs > latestMs ? row : latest
+    })
+
+    resolved.set(ext, {
+      id: best.id,
+      external_id: ext,
+      name: best.name,
+    })
+  }
+
+  return resolved
+}
+
 async function fetchSeedStatusBefore(
   siteIds: string[],
   beforeIso: string,
@@ -429,7 +505,19 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: siteErr.message }, { status: 500 })
   }
 
-  const sites = siteRows ?? []
+  const directByExternalId = new Map(
+    (siteRows ?? []).map((s) => [s.external_id, s] as const),
+  )
+  const fallbackByExternalId = await resolveSitesByLegacySlug(externalIds, directByExternalId)
+
+  const sites = externalIds
+    .map((externalId) => {
+      const direct = directByExternalId.get(externalId)
+      if (direct) return direct
+      return fallbackByExternalId.get(externalId) ?? null
+    })
+    .filter((row): row is { id: string; external_id: string; name: string } => row !== null)
+
   const siteIds = sites.map(s => s.id)
 
   if (siteIds.length === 0) {
